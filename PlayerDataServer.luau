@@ -10,8 +10,6 @@ Important Notes:
 
 You must hardcode all values. You cannot create new ones on the fly using a script.
 
-Do not delete any value in a running game instance—this will cause the player’s data to become corrupted and unsavable due to corruption protection.
-
 Do not override a player's data table entirely—doing so will also prevent the data from saving. 
 
 ]]
@@ -34,6 +32,9 @@ PlayerData.MainData = {
 return PlayerData
 
 ]]
+local DebugWarns = true
+local MaxRetrys = 5 --The amount of times the game will try the data storage after failing before giving up
+
 
 local DataStoreService = game:GetService("DataStoreService")
 local GPlayerData = DataStoreService:GetDataStore("GPlayerData2")
@@ -43,13 +44,10 @@ local Players = game:GetService("Players")
 
 local TemplatePlayerDatarequire = require(TemplatePlayerData)
 
-local FailSafePlayerData = {}
-
 local PlayerDataFailsafeCheckCompletedId = game:GetService("HttpService"):GenerateGUID()
-local PlayerBypassCheckId = game:GetService("HttpService"):GenerateGUID()
 
 
-local DebugWarns = false
+
 
 local warn = function(...)
 	if DebugWarns then
@@ -58,12 +56,9 @@ local warn = function(...)
 end
 
 Players.PlayerAdded:Connect(function(Player)
-
 	local ClonePlayerData = TemplatePlayerData:Clone()
 	ClonePlayerData.Parent=Player
 	ClonePlayerData.Name = "PlayerData"
-
-	FailSafePlayerData[Player.UserId] = {}
 
 	local LoadedPlayerDataTemplate = require(ClonePlayerData)	
 
@@ -75,36 +70,44 @@ Players.PlayerAdded:Connect(function(Player)
 		end
 		return false
 	end
-
-	local S,Message = pcall(function()
-		return GPlayerData:GetAsync(Player.UserId)
-	end)
+	
+	local S = nil
+	local Message = nil
+	
+	
+	for i = 1,MaxRetrys do
+		local S0,Message0 = pcall(function()
+			return GPlayerData:GetAsync(Player.UserId)
+		end)
+		
+		if S0 then
+			S = S0
+			Message = Message0
+			break
+		else
+			warn("failed to receive player data retrying...")
+			task.wait(2)
+		end
+	end
+	
+	
 	if S then
 		if Message ~= nil then
 			for Key,Data in pairs(Message) do
-				table.insert(FailSafePlayerData[Player.UserId],Key)
 				if CheckIfInClonedPlayerData(Key) then
 					LoadedPlayerDataTemplate.MainData[Key] = Data
 				end
 			end
 		else
-			Player:AddTag(PlayerBypassCheckId)
 		end
 
 		Player:AddTag(PlayerDataFailsafeCheckCompletedId)
 	else
+		warn("")
 		warn(Message)
 	end
 end)
 
-local function CheckKeyFailSafe(UserId,Value)
-	for i,v in pairs(FailSafePlayerData[UserId]) do
-		if v == Value then
-			return true
-		end
-	end
-	return false
-end
 
 local function checkforerrt(t)
 	for i,v in pairs(t) do
@@ -119,19 +122,15 @@ local function SavePlayerData(Player:Player)
 			local PlayerData = require(Player.PlayerData).MainData
 			if checkforerrt(PlayerData) then warn("Main data table corruption detected table cannot be empty FAILED TO SAVE DATA") return false end
 
-			if not Player:HasTag(PlayerBypassCheckId) then
-				for Key,Value in pairs(PlayerData) do
-					if not CheckKeyFailSafe(Player.UserId,Key) then
-						warn("Main data table corruption detected failed to save data")
-						return false
-					end
-				end
-			end
 			local S,Message = pcall(function()
 				GPlayerData:SetAsync(Player.UserId,PlayerData)
 			end)
+			
 			if not S then
 				warn("FAILED TO SAVE DATA")
+				return false
+			else
+				return true
 			end
 
 		else
@@ -143,7 +142,14 @@ local function SavePlayerData(Player:Player)
 end
 
 Players.PlayerRemoving:Connect(function(Player)
-	SavePlayerData(Player)
+	for i = 1,MaxRetrys do
+		if SavePlayerData(Player) then
+			break
+		end
+		task.wait(1)
+		warn("Failed to save data retrying....")
+	end
+	
 end)
 
 game:BindToClose(function()
